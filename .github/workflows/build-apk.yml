@@ -22,48 +22,44 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       
-    - name: Cache Gradle packages
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
-          
-    - name: Make gradlew executable
-      run: chmod +x android/gradlew
-      
-    - name: Build APK
+    - name: Install build tools
       run: |
-        cd android
-        ./gradlew assembleRelease --no-daemon
+        sudo apt-get update
+        sudo apt-get install -y aapt zipalign
         
-    - name: Sign APK
+    - name: Build APK manually
       run: |
         cd android
-        # Create keystore
+        mkdir -p build/gen build/obj
+        
+        # Generate R.java
+        aapt package -f -m -J build/gen -S res -M AndroidManifest.xml -I $ANDROID_HOME/platforms/android-33/android.jar
+        
+        # Compile Java sources
+        find src -name "*.java" > sources.txt
+        find build/gen -name "*.java" >> sources.txt
+        javac -cp $ANDROID_HOME/platforms/android-33/android.jar -d build/obj @sources.txt
+        
+        # Create DEX
+        $ANDROID_HOME/build-tools/33.0.0/dx --dex --output=build/classes.dex build/obj/
+        
+        # Package APK
+        aapt package -f -M AndroidManifest.xml -S res -I $ANDROID_HOME/platforms/android-33/android.jar -F build/NFCman-unsigned.apk
+        
+        # Add DEX to APK
+        aapt add build/NFCman-unsigned.apk build/classes.dex
+        
+        # Create keystore and sign
         keytool -genkey -v -keystore release.keystore -alias release -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=NFCman, OU=Dev, O=NFCman, L=City, S=State, C=US"
+        
         # Sign APK
-        jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA256 -keystore release.keystore -storepass android -keypass android app/build/outputs/apk/release/app-release-unsigned.apk release
+        jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA256 -keystore release.keystore -storepass android -keypass android build/NFCman-unsigned.apk release
+        
         # Align APK
-        zipalign -v 4 app/build/outputs/apk/release/app-release-unsigned.apk NFCman-release.apk
+        zipalign -f 4 build/NFCman-unsigned.apk NFCman-release.apk
         
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: NFCman-APK
         path: android/NFCman-release.apk
-        
-    - name: Create Release
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ github.run_number }}
-        name: NFCman Release v${{ github.run_number }}
-        files: android/NFCman-release.apk
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
